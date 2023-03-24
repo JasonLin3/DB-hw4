@@ -76,10 +76,36 @@ const Status BufMgr::allocBuf(int & frame)
 	
 const Status BufMgr::readPage(File* file, const int PageNo, Page*& page)
 {
+    int frameNo = 0;
+    // page in buffer pool - case 2
+    if(hashTable->lookup(file, PageNo, frameNo) ==  OK) {
+        bufTable[frameNo].refbit = 1;
+        bufTable[frameNo].pinCnt += 1;
+        *page = bufPool[frameNo];
+        return OK;
+    } 
+    // page not in buffer pool - case 1
+    else {
+        int frame;
+        if(allocBuf(frame)==BUFFEREXCEEDED) {
+            return BUFFEREXCEEDED;
+        }
+        Page* newPage = new Page();
+        if(file->readPage(PageNo, newPage) == UNIXERR) {
+            return UNIXERR;
+        } else {
+            if(hashTable->insert(file, PageNo, frame)==HASHTBLERROR){
+                return HASHTBLERROR;
+            }
+            else {
+                bufPool[frame] = *newPage;
+                bufTable->Set(file, PageNo);
+                *page = bufPool[frame];
+                return OK;
+            }
+        }
 
-
-
-
+    }
 
 }
 
@@ -87,22 +113,42 @@ const Status BufMgr::readPage(File* file, const int PageNo, Page*& page)
 const Status BufMgr::unPinPage(File* file, const int PageNo, 
 			       const bool dirty) 
 {
-
-
-
-
+    int frameNo = 0;
+    int status = hashTable->lookup(file, PageNo, frameNo);
+    if(status == OK) {
+        if (bufTable[frameNo].pinCnt > 0) {
+            if(dirty) {
+                bufTable[frameNo].dirty = true;
+            }
+            bufTable[frameNo].pinCnt -= 1;
+            return OK;
+        } else{
+            return PAGENOTPINNED;
+        }
+    } else {
+        return HASHNOTFOUND;
+    }
 
 }
 
 const Status BufMgr::allocPage(File* file, int& pageNo, Page*& page) 
 {
-
-
-
-
-
-
-
+    int tempPage;
+    if(file->allocatePage(tempPage)==UNIXERR) {
+        return UNIXERR;
+    }
+    int frame;
+    if(allocBuf(frame) == BUFFEREXCEEDED) {
+        return BUFFEREXCEEDED;
+    }
+    if(hashTable->insert(file, tempPage, frame) == HASHTBLERROR) {
+        return HASHTBLERROR;
+    }
+    bufTable->Set(file, tempPage);
+    bufPool[frame] = *(new Page());
+    pageNo = tempPage;
+    *page = bufPool[frame];
+    return OK;
 }
 
 const Status BufMgr::disposePage(File* file, const int pageNo) 
