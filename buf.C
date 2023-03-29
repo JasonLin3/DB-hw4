@@ -65,12 +65,48 @@ BufMgr::~BufMgr() {
 
 const Status BufMgr::allocBuf(int & frame) 
 {
+    //Find page to replace using clock
+    int handStart = clockHand;
+    int loops = 0;
+    while(loops < 2){
+        if(bufTable[clockHand].pinCnt == 0){
+            //Return page
+            if(bufTable[clockHand].refbit == 0){
+                frame = clockHand;
+                break;
+            }
+            //Decrement refbit
+            else{
+                bufTable[clockHand].refbit = 0;
+            }
+        } 
+        //Update
+        clockHand = (clockHand + 1) % numBufs; 
+        loops += (clockHand == handStart) ? 1 : 0;
+    }
 
+    //Handle loop terminating after looking at all pages
+    if(loops >= 2) {
+        return BUFFEREXCEEDED;
+    }
+    
+    //Write if dirty
+    if(bufTable[clockHand].dirty && bufTable[clockHand].valid){
+        File* filePtr = bufTable[clockHand].file;
+        int pageNo = bufTable[clockHand].pageNo;
+        int frameNo = clockHand;
+        Page* pagePtr = (Page *)hashTable->lookup(filePtr, pageNo, frameNo);
+        if(filePtr->writePage(pageNo, pagePtr) == UNIXERR) {
+            return UNIXERR;
+        }
+    }
 
+    //Update hash table
+    if(bufTable[clockHand].valid) {
+        hashTable->remove(bufTable[clockHand].file, bufTable[clockHand].pageNo);
+    }
 
-
-
-
+    return OK;
 }
 
 	
@@ -81,7 +117,7 @@ const Status BufMgr::readPage(File* file, const int PageNo, Page*& page)
     if(hashTable->lookup(file, PageNo, frameNo) ==  OK) {
         bufTable[frameNo].refbit = 1;
         bufTable[frameNo].pinCnt += 1;
-        *page = bufPool[frameNo];
+        page = &bufPool[frameNo];
         return OK;
     } 
     // page not in buffer pool - case 1
@@ -90,17 +126,16 @@ const Status BufMgr::readPage(File* file, const int PageNo, Page*& page)
         if(allocBuf(frame)==BUFFEREXCEEDED) {
             return BUFFEREXCEEDED;
         }
-        Page* newPage = new Page();
-        if(file->readPage(PageNo, newPage) == UNIXERR) {
+        // Page* newPage = new Page();
+        if(file->readPage(PageNo, &bufPool[frame]) == UNIXERR) {
             return UNIXERR;
         } else {
             if(hashTable->insert(file, PageNo, frame)==HASHTBLERROR){
                 return HASHTBLERROR;
             }
             else {
-                bufPool[frame] = *newPage;
-                bufTable->Set(file, PageNo);
-                *page = bufPool[frame];
+                bufTable[frame].Set(file, PageNo);
+                page = &bufPool[frame];
                 return OK;
             }
         }
@@ -113,7 +148,7 @@ const Status BufMgr::readPage(File* file, const int PageNo, Page*& page)
 const Status BufMgr::unPinPage(File* file, const int PageNo, 
 			       const bool dirty) 
 {
-    int frameNo = 0;
+    int frameNo;
     int status = hashTable->lookup(file, PageNo, frameNo);
     if(status == OK) {
         if (bufTable[frameNo].pinCnt > 0) {
@@ -133,21 +168,20 @@ const Status BufMgr::unPinPage(File* file, const int PageNo,
 
 const Status BufMgr::allocPage(File* file, int& pageNo, Page*& page) 
 {
-    int tempPage;
-    if(file->allocatePage(tempPage)==UNIXERR) {
+    if(file->allocatePage(pageNo)==UNIXERR) {
         return UNIXERR;
     }
     int frame;
     if(allocBuf(frame) == BUFFEREXCEEDED) {
         return BUFFEREXCEEDED;
     }
-    if(hashTable->insert(file, tempPage, frame) == HASHTBLERROR) {
+    if(hashTable->insert(file, pageNo, frame) == HASHTBLERROR) {
         return HASHTBLERROR;
     }
-    bufTable->Set(file, tempPage);
-    bufPool[frame] = *(new Page());
-    pageNo = tempPage;
-    *page = bufPool[frame];
+
+    bufTable[frame].Set(file, pageNo);
+    file->readPage(pageNo, &bufPool[frame]);
+    page = &bufPool[frame];
     return OK;
 }
 
