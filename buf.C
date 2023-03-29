@@ -66,7 +66,7 @@ BufMgr::~BufMgr() {
 const Status BufMgr::allocBuf(int & frame) 
 {
     //Find page to replace using clock
-    int handStart = clockHand;
+    unsigned int handStart = clockHand;
     int loops = 0;
     while(loops < 2){
         if(bufTable[clockHand].pinCnt == 0){
@@ -81,7 +81,7 @@ const Status BufMgr::allocBuf(int & frame)
             }
         } 
         //Update
-        clockHand = (clockHand + 1) % numBufs; 
+        advanceClock();
         loops += (clockHand == handStart) ? 1 : 0;
     }
 
@@ -94,7 +94,7 @@ const Status BufMgr::allocBuf(int & frame)
     if(bufTable[clockHand].dirty && bufTable[clockHand].valid){
         File* filePtr = bufTable[clockHand].file;
         int pageNo = bufTable[clockHand].pageNo;
-        int frameNo = clockHand;
+        int frameNo;
         hashTable->lookup(filePtr, pageNo, frameNo);
         if(filePtr->writePage(pageNo, &bufPool[frameNo]) == UNIXERR) {
             return UNIXERR;
