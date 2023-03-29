@@ -95,8 +95,8 @@ const Status BufMgr::allocBuf(int & frame)
         File* filePtr = bufTable[clockHand].file;
         int pageNo = bufTable[clockHand].pageNo;
         int frameNo = clockHand;
-        Page* pagePtr = (Page *)hashTable->lookup(filePtr, pageNo, frameNo);
-        if(filePtr->writePage(pageNo, pagePtr) == UNIXERR) {
+        hashTable->lookup(filePtr, pageNo, frameNo);
+        if(filePtr->writePage(pageNo, &bufPool[frameNo]) == UNIXERR) {
             return UNIXERR;
         }
     }
@@ -105,6 +105,7 @@ const Status BufMgr::allocBuf(int & frame)
     if(bufTable[clockHand].valid) {
         hashTable->remove(bufTable[clockHand].file, bufTable[clockHand].pageNo);
     }
+    bufTable[clockHand].Clear();
 
     return OK;
 }
@@ -112,7 +113,7 @@ const Status BufMgr::allocBuf(int & frame)
 	
 const Status BufMgr::readPage(File* file, const int PageNo, Page*& page)
 {
-    int frameNo = 0;
+    int frameNo;
     // page in buffer pool - case 2
     if(hashTable->lookup(file, PageNo, frameNo) ==  OK) {
         bufTable[frameNo].refbit = 1;
@@ -156,6 +157,9 @@ const Status BufMgr::unPinPage(File* file, const int PageNo,
                 bufTable[frameNo].dirty = true;
             }
             bufTable[frameNo].pinCnt -= 1;
+            if(bufTable[frameNo].pinCnt == 0) {
+                bufTable[frameNo].refbit = 1;
+            }
             return OK;
         } else{
             return PAGENOTPINNED;
