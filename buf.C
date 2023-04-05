@@ -1,3 +1,15 @@
+/**
+Group Members:
+    Jason Lin, jlin369, 9081113509
+    Chris Plagge, cplagge, 9082038416
+
+Purpose of file:
+    This file implements a buffer management system to manage the pages that lie in the buffer pool at any given time.
+This file implements functionalities such as reading a page into the buffer pool, allocating a new page, unpinning
+pages, removing pages, and flushing the buffer pool.
+*/
+
+
 #include <memory.h>
 #include <unistd.h>
 #include <errno.h>
@@ -62,15 +74,25 @@ BufMgr::~BufMgr() {
     delete [] bufPool;
 }
 
-
+/**
+ * Allocates a frame in the buffer pool. Using the clock replacement algorithm, this function
+ * will find the optimal frame to replace and returns by reference which frame is allocated.
+ * It then updates the frame data in the buffer table.
+ * 
+ * @param frame             Acts as a pass by reference variable which will be updated with the frame number allocated.
+ * @return const Status     Returns a status indicating success or failed allocation.
+ */
 const Status BufMgr::allocBuf(int & frame) 
 {
     //Find page to replace using clock
     unsigned int handStart = clockHand;
     int loops = 0;
+    
+    //Only run twice to check for optimal page to allocate
     while(loops < 2){
+        //Handles frame not in use
         if(bufTable[clockHand].pinCnt == 0){
-            //Return page
+            //Return frame if available
             if(bufTable[clockHand].refbit == 0){
                 frame = clockHand;
                 break;
@@ -80,9 +102,9 @@ const Status BufMgr::allocBuf(int & frame)
                 bufTable[clockHand].refbit = 0;
             }
         } 
-        //Update
+        //Handles frame which is still in use
         advanceClock();
-        loops += (clockHand == handStart) ? 1 : 0;
+        loops += (clockHand == handStart) ? 1 : 0; //Will update on successful loop
     }
 
     //Handle loop terminating after looking at all pages
@@ -92,50 +114,71 @@ const Status BufMgr::allocBuf(int & frame)
     
     //Write if dirty
     if(bufTable[clockHand].dirty && bufTable[clockHand].valid){
+        //Establishes parameters for write
         File* filePtr = bufTable[clockHand].file;
         int pageNo = bufTable[clockHand].pageNo;
         int frameNo;
         hashTable->lookup(filePtr, pageNo, frameNo);
+        //Write to disk and handle errors
         if(filePtr->writePage(pageNo, &bufPool[frameNo]) == UNIXERR) {
             return UNIXERR;
         }
     }
 
-    //Update hash table
+    //Update hash table only if allocated frame was formerly a valid frame
     if(bufTable[clockHand].valid) {
         hashTable->remove(bufTable[clockHand].file, bufTable[clockHand].pageNo);
     }
+
+    //Remove metadata for removed frame
     bufTable[clockHand].Clear();
 
     return OK;
 }
 
-	
+/**
+ * Reads a specific page from a file. When given the desired file and page number
+ * this function will assign a pointer which was passed by reference to contain the page requested.
+ * 
+ * @param file              File to read page from.
+ * @param PageNo            Page number within the file.
+ * @param page              Pass by reference pointer to hold page once read from file.
+ * @return const Status     Returns a status indicating successful or failed read.
+ */
 const Status BufMgr::readPage(File* file, const int PageNo, Page*& page)
 {
+    
     int frameNo;
-    // page in buffer pool - case 2
+    //Finds frame number if page exists in buffer pool
     if(hashTable->lookup(file, PageNo, frameNo) ==  OK) {
+        //Mark in metadata that page was requested
         bufTable[frameNo].refbit = 1;
         bufTable[frameNo].pinCnt += 1;
+        //Set page variable to pass back the correct pointer
         page = &bufPool[frameNo];
         return OK;
     } 
-    // page not in buffer pool - case 1
+
+    //Handling page not in buffer pool
     else {
         int frame;
+        //Tries to make space to add page to buffer pool
         if(allocBuf(frame)==BUFFEREXCEEDED) {
             return BUFFEREXCEEDED;
         }
-        // Page* newPage = new Page();
+        //Tries to read page from file into the buffer pool at allocated location
         if(file->readPage(PageNo, &bufPool[frame]) == UNIXERR) {
             return UNIXERR;
-        } else {
+        } 
+        else {
+            //Tries to add the location of newly allocated page into the hashtable tracking the buffer pool
             if(hashTable->insert(file, PageNo, frame)==HASHTBLERROR){
                 return HASHTBLERROR;
             }
             else {
+                //Sets the default metadata for the new page
                 bufTable[frame].Set(file, PageNo);
+                //Set page variable to pass back the correct pointer to read page
                 page = &bufPool[frame];
                 return OK;
             }
@@ -145,46 +188,78 @@ const Status BufMgr::readPage(File* file, const int PageNo, Page*& page)
 
 }
 
-
+/**
+ * Unpins a page from being active. When a process finishes using a page, it can
+ * call this function to decrement the pincount and thus reflect that the page is no longer in use.
+ * This function will also update the page metadata to reflect if changes were made that must be 
+ * written to disk upon page deallocation.
+ * 
+ * @param file             File on which the page to be unpinned is found
+ * @param PageNo           Page number of page to be unpinned within the file
+ * @param dirty            Indicates if page was edited during use
+ * @return const Status    Returns status reflecting successful or failed upPinning
+ */
 const Status BufMgr::unPinPage(File* file, const int PageNo, 
 			       const bool dirty) 
 {
     int frameNo;
+    //Check if page requested is currently in the buffer pool
     int status = hashTable->lookup(file, PageNo, frameNo);
+    //If page is in buffer pool
     if(status == OK) {
+        //If the page is currently pinned, decrement the pin count
         if (bufTable[frameNo].pinCnt > 0) {
+            //If we must mark page dirty to indicate it was edited, do so
             if(dirty) {
                 bufTable[frameNo].dirty = true;
             }
             bufTable[frameNo].pinCnt -= 1;
+            //If the pinCnt drops from 1 to 0, set the refbit to 1
             if(bufTable[frameNo].pinCnt == 0) {
                 bufTable[frameNo].refbit = 1;
             }
             return OK;
-        } else{
+        } 
+        //Return status error if trying to unpin page that isn't pinned
+        else{
             return PAGENOTPINNED;
         }
-    } else {
+    } 
+    else {
         return HASHNOTFOUND;
     }
 
 }
 
+/**
+ * Overarching function for allocating a page in a file. This function handles interaction with the 
+ * allocBuf function defined above and focuses on setting metadata for the frame 
+ * which is allocated by allocBuf to reflect its addition to the file.
+ * 
+ * @param file              File in which to allocate a new page.
+ * @param pageNo            Pass by reference variable to hold page number within the file of the new page.           
+ * @param page              Pass by reference variable to hold newly allocated page pointer.
+ * @return const Status     Returns status indicating success or details of failure.
+ */
 const Status BufMgr::allocPage(File* file, int& pageNo, Page*& page) 
 {
+    //Create new page in file
     if(file->allocatePage(pageNo)==UNIXERR) {
         return UNIXERR;
     }
     int frame;
+    //Allocate frame in buffer for new page
     if(allocBuf(frame) == BUFFEREXCEEDED) {
         return BUFFEREXCEEDED;
     }
+    //Insert new page into hash table
     if(hashTable->insert(file, pageNo, frame) == HASHTBLERROR) {
         return HASHTBLERROR;
     }
-
+    //Set default metadata for new page
     bufTable[frame].Set(file, pageNo);
     file->readPage(pageNo, &bufPool[frame]);
+    //Return pointer to new page in the page pass by reference variable
     page = &bufPool[frame];
     return OK;
 }
